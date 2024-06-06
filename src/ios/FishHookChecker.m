@@ -16,6 +16,60 @@
 #import "dlfcn.h"
 #import "string.h"
 
+/*
+ Lazy_Symbol_Ptr:
+ 
+ call symbol2
+ |
+ |
+ |   stubs(TEXT)
+ |   *--------------*            stub_symbol:
+ |   | stub_symbol1 |                         ldr x16 ptr   (ptr = pointer of lazy_symbol_ptr)
+ |   |              |                         br x16
+ *---> stub_symbol2 |
+ |   ...        |
+ *--------------*
+ 
+ 
+ lazy_symbol_ptr(DATA)                   stub_helper(TEXT)
+ *--------------*                        *---------------------------*
+ |     ptr1     |                        |    br dyld_stub_binder    |    <-------------------*
+ |     ptr2  ---------*                  |    symbol_binder_code_1   |                        |
+ |     ptr3     |     *------------------->   symbol_binder_code_2   |                        |
+ |     ...      |                        |          ...              |                        |
+ *--------------*                        *---------------------------*                        |
+ |
+ symbol_binder_code:                           |
+ ldr w16, #8(.byte)        |
+ b br_dyld_stub_binder  ---*
+ .byte
+ 
+ 
+ .byte of the symbol is offset from beginning of lazy_binding_info to beginning of symbol_info
+ 
+ lazy_binding_info(LINKEDIT -> DYLD_INFO -> LazyBindingInfo)
+ *-----------------*
+ |  symbol_info_1  |          symbol_info:
+ |  symbol_info_2  |                         bind_opcode_done
+ |  symbol_info_3  |                         bind_opcode_set_segment_and_offset_uleb
+ |  ...            |                         uleb128
+ *-----------------*                         BIND_OPCODE_SET_DYLIB_ORDINAL_IMM
+ BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM
+ **SymbolName**
+ bind_opcode_do_bind
+ 
+ 
+ 
+ The `denyFishHook` will look for code of `symbol_binder_code` of the symbol, and then make `lazy_symbol_ptr` of the symbol pointee to it
+ 
+ Non_Lazy_Symbol_Ptr:
+ wait to do based on export_info and binding_info
+ */
+
+
+
+
+
 // Macro Definitions
 #define BIND_OPCODE_DONE                       0x00
 #define BIND_OPCODE_SET_DYLIB_ORDINAL_IMM      0x10
@@ -305,13 +359,98 @@ static const int BindTypeThreadedRebase = 102;
 
 @end
 
+
+// MARK: - FishHook
+// MARK: - FishHook
+
 @implementation FishHook
 
 + (void)replaceSymbol:(NSString *)symbol atImage:(const struct mach_header *)image imageSlide:(intptr_t)slide newMethod:(void *)newMethod oldMethod:(void **)oldMethod {
-    // Placeholder for actual implementation of replaceSymbol
+    uint8_t *ptr = NULL;
+    uint8_t *end = NULL;
+    uint64_t count = 0;
+    int segmentIndex = 0;
+
+    // Iterate through all the segments of the image
+    while (segmentIndex < image->ncmds) {
+        struct load_command *loadCmd = (struct load_command *)((uint8_t *)image + count);
+
+        if (loadCmd->cmd == LC_SEGMENT_64) {
+            struct segment_command_64 *segCmd = (struct segment_command_64 *)loadCmd;
+            if (strcmp(segCmd->segname, "__LINKEDIT") == 0) {
+                // Found the __LINKEDIT segment
+                ptr = (uint8_t *)(segCmd->vmaddr + slide);
+                end = ptr + segCmd->vmsize;
+                break;
+            }
+        }
+
+        count += loadCmd->cmdsize;
+        segmentIndex++;
+    }
+
+    if (!ptr || !end) {
+        // Couldn't find the __LINKEDIT segment
+        return;
+    }
+
+    // Iterate through the bind commands to find the symbol
+    while (ptr < end) {
+        uint8_t opcode = *ptr & BIND_OPCODE_MASK;
+        uint8_t immediate = *ptr & BIND_IMMEDIATE_MASK;
+        ptr++;
+
+        switch (opcode) {
+            case BIND_OPCODE_DONE:
+                // End of the bind commands
+                return;
+            case BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM: {
+                // Get the symbol name
+                const char *bindSymbol = (char *)ptr;
+                ptr += strlen(bindSymbol) + 1;
+
+                // Check if this is the symbol we're looking for
+                if (strcmp(bindSymbol, [symbol UTF8String]) == 0) {
+                    // Replace the old method with the new method
+                    *oldMethod = *(void **)ptr;
+                    *(void **)ptr = newMethod;
+                    return;
+                }
+                break;
+            }
+            default: {
+                // Get the immediate value
+                int32_t value = 0;
+                if (opcode == BIND_OPCODE_SET_DYLIB_ORDINAL_IMM || opcode == BIND_OPCODE_SET_TYPE_IMM || opcode == BIND_OPCODE_SET_ADDEND_SLEB) {
+                    value = immediate;
+                } else {
+                    value = readUleb128(&ptr, end);
+                }
+                // Move the pointer based on the opcode
+                switch (opcode) {
+                    case BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB:
+                    case BIND_OPCODE_SET_TYPE_IMM:
+                    case BIND_OPCODE_SET_ADDEND_SLEB:
+                        break;
+                    case BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB:
+                    case BIND_OPCODE_ADD_ADDR_ULEB:
+                    case BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB:
+                    case BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB:
+                        break;
+                    case BIND_OPCODE_DO_BIND:
+                    case BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED:
+                        break;
+                    default:
+                        break;
+                }
+                break;
+            }
+        }
+    }
 }
 
 @end
+
 
 static uint64_t readUleb128(uint8_t **ptr, uint8_t *end) {
     uint8_t *p = *ptr;
