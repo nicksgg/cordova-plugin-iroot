@@ -158,6 +158,10 @@ enum {
         (f = fopen("/usr/bin/frida-server", "r")) ||
         (f = fopen("/usr/local/bin/cycript", "r")) ||
 
+        // from OWASP https://mas.owasp.org/MASTG/iOS/0x06j-Testing-Resiliency-Against-Reverse-Engineering/#jailbreak-detection
+        (f = fopen("/usr/sbin/frida-server", "r")) ||            
+        (f = fopen("/usr/bin/cycript", "r")) ||            
+        
         (f = fopen("/usr/lib/libcycript.dylib", "r"))
         )  {
         fclose(f);
@@ -182,6 +186,7 @@ enum {
         [[NSFileManager defaultManager] removeItemAtPath:testWritePath error:nil];
     }
 
+    // Checking Protocol Handles
     if ([[UIApplication sharedApplication] canOpenURL:[NSURL URLWithString:@"cydia://package/com.example.package"]])
     {
         return YES;
