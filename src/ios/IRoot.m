@@ -9,6 +9,7 @@
 #import "IRoot.h"
 #import <sys/stat.h>
 #import <sys/sysctl.h>
+#import <sys/proc.h>
 
 
 
@@ -32,6 +33,8 @@ enum {
     KFProcessesOtherCydia = 42932,
     // Failed the Processes Check with other other Cydia
     KFProcessesOtherOCydia = 10013,
+    // Failed the Processes is debugged
+    KFProcessesIsDebugged = 10014,
     // Failed the FSTab Check
     KFFSTab = 9620,
     // Failed the System() Check
@@ -474,6 +477,22 @@ enum {
         return NOTJAIL;
     }
 }
+
+// amIDebugged
+- (int)amIDebugged {
+    struct kinfo_proc kinfo;
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};
+    size_t miblen = 4;
+    size_t size = sizeof(kinfo);
+    int sysctlRet = sysctl(mib, miblen, &kinfo, &size, NULL, 0);
+
+     if (sysctlRet != 0) {
+        NSLog(@"Error occurred when calling sysctl(). The debugger check may not be reliable");
+    }
+
+    return ((kinfo.kp_proc.p_flag & P_TRACED) != 0 ? KFProcessesIsDebugged : NOTJAIL);      
+}
+
 
 // Get the running processes
 - (NSArray *)runningProcesses {
